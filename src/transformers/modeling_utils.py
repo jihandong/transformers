@@ -5710,6 +5710,9 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, PushToHubMixin, PeftAdapterMi
             or getattr(self, "_last_compile_config", default_config) != compile_config
         ):
             self._last_compile_config = compile_config
+            # 这里会自动 compile forward 方法，里面会真地做一些编译工作：
+            #   TorchDynamo 做 graphIR 的中间优化
+            #   TorchInductor 做 hardware-aware 的后端优化
             self._compiled_call = torch.compile(self.__call__, **compile_config.to_dict())
         return self._compiled_call
 

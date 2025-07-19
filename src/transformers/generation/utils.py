@@ -2189,6 +2189,7 @@ class GenerationMixin(ContinuousMixin):
         Determines whether to trigger auto-compilation of the model's forward pass at generation time.
         """
         # Override: honor `disable_compile` flag
+        # 如果使用 flexinfer 自己的调度，可能需要关闭自动优化
         if generation_config.disable_compile:
             return False
 
@@ -2423,6 +2424,7 @@ class GenerationMixin(ContinuousMixin):
             )
 
         # 5. Prepare `input_ids` which will be used for auto-regressive generation
+        # 这里完成 prefill 阶段对 input_ids 的计算
         if self.config.is_encoder_decoder:
             input_ids, model_kwargs = self._prepare_decoder_input_ids_for_generation(
                 batch_size=batch_size,
@@ -2472,6 +2474,7 @@ class GenerationMixin(ContinuousMixin):
             and not self.config.is_encoder_decoder
         ):
             max_cache_length += inputs_tensor.shape[1]
+        # 这里根据 device_map 安排 kv-cache
         self._prepare_cache_for_generation(
             generation_config, model_kwargs, assistant_model, batch_size, max_cache_length, device
         )
@@ -2515,6 +2518,7 @@ class GenerationMixin(ContinuousMixin):
         model_kwargs["use_cache"] = generation_config.use_cache
 
         # 10. go into different generation modes
+        # 这里完成 decode 阶段，有很多不同的生成方式
         if generation_mode == GenerationMode.ASSISTED_GENERATION:
             if generation_config.num_return_sequences > 1:
                 raise ValueError(
@@ -3488,6 +3492,7 @@ class GenerationMixin(ContinuousMixin):
         else:
             return input_ids
 
+    # 这里包含了 gready 和 random sample 的 decode 流程
     def _sample(
         self,
         input_ids: torch.LongTensor,
@@ -3560,6 +3565,7 @@ class GenerationMixin(ContinuousMixin):
         unfinished_sequences = torch.ones(batch_size, dtype=torch.long, device=input_ids.device)
         model_kwargs = self._get_initial_cache_position(cur_len, input_ids.device, model_kwargs)
 
+        # nn.Module.__call__ 会注册所有 hooks 并调用 forward
         model_forward = self.__call__
         compile_forward = self._valid_auto_compile_criteria(model_kwargs, generation_config)
         if compile_forward:
@@ -3577,6 +3583,10 @@ class GenerationMixin(ContinuousMixin):
                         "FA2 introduces graph breaks. We overrode the option with `fullgraph=False`."
                     )
                     generation_config.compile_config.fullgraph = False
+            # 可以使用 torch.compile 优化后的 forward 覆盖默认 forward
+            # 似乎一般都是动态生成的
+            # 理论上也可以重载 get_compiled_call，但没见到有模型这么干
+            # @see https://huggingface.co/docs/transformers/perf_torch_compile
             model_forward = self.get_compiled_call(generation_config.compile_config)
 
         if generation_config.prefill_chunk_size is not None:
@@ -3585,6 +3595,7 @@ class GenerationMixin(ContinuousMixin):
         else:
             is_prefill = True
 
+        # 进入循环 inference
         while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
             # prepare model inputs
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
@@ -3593,6 +3604,8 @@ class GenerationMixin(ContinuousMixin):
             model_inputs.update({"output_attentions": output_attentions} if output_attentions else {})
             model_inputs.update({"output_hidden_states": output_hidden_states} if output_hidden_states else {})
 
+            # 先进入 prefill 阶段，直接调用 forward
+            # 之后的 decode 阶段由机会使用 compiled_forward
             if is_prefill:
                 outputs = self(**model_inputs, return_dict=True)
                 is_prefill = False
@@ -3616,6 +3629,7 @@ class GenerationMixin(ContinuousMixin):
             next_token_scores = logits_processor(input_ids, next_token_logits)
 
             # Store scores, attentions and hidden_states when required
+            # 这部分在不同 generation mode 下应该会有些差异化的处理
             if return_dict_in_generate:
                 if output_scores:
                     scores += (next_token_scores,)

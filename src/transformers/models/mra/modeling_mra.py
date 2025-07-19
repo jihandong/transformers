@@ -54,6 +54,7 @@ def load_cuda_kernels():
 
     src_files = append_root(["cuda_kernel.cu", "cuda_launch.cu", "torch_extension.cpp"])
 
+    # 这个对象的方法会调用到 torch_extension.cpp，进而到 cuda_kernel.cu
     mra_cuda_kernel = load("cuda_kernel", src_files, verbose=True)
 
 
@@ -528,6 +529,7 @@ class MraSelfAttention(nn.Module):
                 f"heads ({config.num_attention_heads})"
             )
 
+        # self-attention 的计算都使用 cuda 算子加速
         kernel_loaded = mra_cuda_kernel is not None
         if is_torch_cuda_available() and is_cuda_platform() and is_ninja_available() and not kernel_loaded:
             try:
@@ -633,6 +635,7 @@ class MraSelfOutput(nn.Module):
         return hidden_states
 
 
+# Self-attention 计算被单独分出去作为一个类
 class MraAttention(nn.Module):
     def __init__(self, config, position_embedding_type=None):
         super().__init__()
@@ -640,6 +643,7 @@ class MraAttention(nn.Module):
         self.output = MraSelfOutput(config)
         self.pruned_heads = set()
 
+    # 在 MraModel 创建时做所有 attentions pruning
     def prune_heads(self, heads):
         if len(heads) == 0:
             return
@@ -712,6 +716,7 @@ class MraLayer(GradientCheckpointingLayer):
 
         outputs = self_attention_outputs[1:]  # add self attentions if we output attention weights
 
+        # chunk 用来节省 GPU memory
         layer_output = apply_chunking_to_forward(
             self.feed_forward_chunk, self.chunk_size_feed_forward, self.seq_len_dim, attention_output
         )
@@ -742,6 +747,7 @@ class MraEncoder(nn.Module):
     ):
         all_hidden_states = () if output_hidden_states else None
 
+        # 这部分是 encoder 的 forward 方法，循环计算逐层
         for i, layer_module in enumerate(self.layer):
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
@@ -844,6 +850,7 @@ class MraModel(MraPreTrainedModel):
         super().__init__(config)
         self.config = config
 
+        # MraModel 分成 embeddings 和 encoder 两部分
         self.embeddings = MraEmbeddings(config)
         self.encoder = MraEncoder(config)
 
